@@ -1,0 +1,13 @@
+// Gradle 设置：固定插件仓库与项目名（与 forge-bridge 保持一致）。
+pluginManagement {
+    repositories {
+        maven {
+            name = 'ForgeMaven'
+            url = uri('https://maven.minecraftforge.net/')
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'forge-test-addon'

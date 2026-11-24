@@ -1,0 +1,41 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+
+[[mods]]
+## modId 必须与 @Mod 注解中的值一致
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+description='''
+${mod_description}
+'''
+## 允许客户端 / 服务端模组版本不一致（桥接模组是单向只读的连接器，版本不必严格对齐）
+displayTest="IGNORE_SERVER_VERSION"
+
+[[dependencies.${mod_id}]]
+    ## Forge 本体
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    ## Minecraft 本体
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    ## 晴雪UI（ApricityUI）：可选前置，不是硬依赖。
+    ## 装了 → 用它的 ore 主题（基岩版观感）渲染阅读面板；没装 → 回退原版 GuiGraphics 界面。
+    ## side=CLIENT 是因为它本身是纯客户端 UI 模组，服务端不需要装。
+    modId="apricityui"
+    mandatory=false
+    versionRange="[1.3.1,)"
+    ordering="AFTER"
+    side="CLIENT"

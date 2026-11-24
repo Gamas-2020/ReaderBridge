@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!--
+  阅读状态 HUD 的晴雪UI（ApricityUI 1.3.1）页面。
+
+  meta 说明：
+    aui-font-mode=web     网页字体规则（否则走原版像素字体，中文发糊）。必需。
+    aui-viewport=browser  视口跟随游戏窗口。必需。
+    刻意不写 aui-mouse-events=intercept：这个 HUD 是纯展示，
+    一旦拦截鼠标，AUI 的 DocumentLayerOrder.hasPersistentScreenDocumentAt() 就会
+    把鼠标从游戏/界面上抢走（连背包都点不动）。
+
+  本版（2026-11-25 重写）修复三件事，细节见 .reports/hud-js-fix.md：
+    1) 脚本崩溃：Java 侧 Element.setTextContent(String) 的 getter 返回 java.lang.String，
+       在 AUI 的 Rhino 里被包成 NativeJavaObject。对包装对象读 .length 拿到的是
+       length() 方法对象而不是数字，`s.length <= 26` 恒为 false（NaN 比较），
+       cut() 的保护失效，substring(0, 25) 打到只有 8 个 code unit 的
+       「阅读器 · 空闲」上 → StringIndexOutOfBoundsException。
+       修法：所有进字符串运算的值先过 toStr()（"" + v 触发 toString），
+       再判长度。pull() 整个函数体包 try/catch，异常不再逃进 AUI scheduler。
+    2) 字体：不再引 ore.css、body 不再挂 ore-theme（它的 body.ore-theme 规则会
+       压过本页的透明底与字体栈，且 font-family 指向不可用的 OreRegular）。
+       字体栈以 sans-serif 收尾，AUI 会落到 AWT 逻辑字体，中文由系统字体回退挑字形。
+    3) 观感：空状态也一定有字（书名/章名/句子都有占位文案），
+       高度由 Java 侧按 compact / full 两档内联写入，不再是「有尺寸没内容」的空壳。
+
+  颜色全部硬编码，与 ore（基岩版 OreUI）调色板一致：
+    canvas #202124 / surface #48494a / surface-deep #313233 / edge #1e1e1f
+    green #3c8527 / gold #f0b92d / red #b33b31 / ink #f4f5f7 / ink-muted #b6bac1
+  不用 var()、calc()、text-shadow、radial-gradient、:has()、currentColor：
+  AUI 自研 CSS 引擎不支持这些（见 .reports/apricityui.md §3.4）。
+
+  尺寸策略：
+  aui-viewport=mode=browser 下 1 CSS px = 1 物理像素，GUI px = 物理像素 / guiScale。
+  真正的 left/top/width/height/font-size 全部由 Java 侧（AuiHud）按
+  document.getViewportScaleX() 换算成 CSS px 后写进内联样式 —— 一套坐标
+  （hudX/hudY，GUI 像素）同时喂两套渲染。这里写的是设计像素默认值，只作兜底。
+  JS 只负责「文字 + 进度条宽度 + 状态点颜色」，尺寸与位置不归 JS 管。
+-->
+<meta name="aui-font-mode" content="web">
+<meta name="aui-viewport" content="mode=browser">
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    /* HUD 页面绝不能有底色：这块 overlay 会把整个游戏画面盖掉。
+       用 rgba(alpha=0) 而不是 transparent 关键字：该引擎的命名色只认 26 个基础色。
+       已移除 ore.css 的 link 与 body 上的 ore-theme 类，否则 body.ore-theme
+       的底色/字体规则（0,1,1）会压过这里（0,0,1）。 */
+    background: rgba(0, 0, 0, 0);
+    overflow: hidden;
+    color: #f4f5f7;
+    /* 中文优先的字体栈，末尾 sans-serif 是硬回退：AUI 找不到具名字体时
+       会落到 AWT 逻辑字体 SansSerif，中文由系统字体回退挑字形。
+       绝不出现 OreRegular / OreDisplay / Minecraft —— 那几个只含拉丁字形，
+       且 minecraft-regular.otf 在部分客户端根本没注册成功。 */
+    font-family: "Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+    font-size: 13px;
+}
+/* ---- 胶囊主体：位置 / 尺寸 / 显隐由 Java 内联样式覆盖（compact / full 两档高度） ---- */
+#rb-hud {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    width: 240px;
+    height: 96px;
+    background: rgba(32, 33, 36, 0.9);
+    border: 2px solid #1e1e1f;
+    border-radius: 8px;
+    /* 不加 box-sizing 时 border 会把内容区挤小 4px，文字槽右边界与进度条会对不齐 */
+    box-sizing: border-box;
+    font-family: "Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+}
+/* 状态点：off 红 / idle 灰 / paused 金 / ok 绿，颜色由 JS 改 style.background，
+   Java 侧 applyLayout 也会按同一张表写一次（两边同源，谁后写结果都一样）。 */
+#rb-dot {
+    position: absolute;
+    left: 8px;
+    top: 9px;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: #b33b31;
+}
+/* 书名（主标题） */
+#rb-book {
+    position: absolute;
+    left: 22px;
+    top: 6px;
+    width: 210px;
+    height: 18px;
+    line-height: 18px;
+    font-size: 14px;
+    color: #f4f5f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: "Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+}
+/* 章名（金色副标题） */
+#rb-chap {
+    position: absolute;
+    left: 22px;
+    top: 26px;
+    width: 120px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 11px;
+    color: #f0b92d;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: "Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+}
+/* 进度百分比（右对齐灰） */
+#rb-pct {
+    position: absolute;
+    left: 146px;
+    top: 26px;
+    width: 86px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 11px;
+    color: #b6bac1;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    font-family: "Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+}
+/* 当前句：最多 3 行（height / line-height = 3），超出由 overflow 裁掉，
+   JS 侧还会再按字数截断一次，双保险。compact 档（off/idle）由 Java 写 display:none。 */
+#rb-sent {
+    position: absolute;
+    left: 8px;
+    top: 42px;
+    width: 224px;
+    height: 45px;
+    font-size: 12px;
+    line-height: 15px;
+    color: #f4f5f7;
+    overflow: hidden;
+    font-family: "Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+}
+/* 进度条槽 + 填充（填充宽度 = 0~100%，由 JS 设置；compact 档整体 display:none） */
+#rb-bar {
+    position: absolute;
+    left: 8px;
+    top: 90px;
+    width: 224px;
+    height: 4px;
+    background: #313233;
+    border-radius: 2px;
+    overflow: hidden;
+}
+#rb-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0%;
+    height: 4px;
+    background: #3c8527;
+    border-radius: 2px;
+}
+/* 数据槽：不参与视觉但必须留在视口内参与排版。
+   早期 main.html 把它挪到 left:-9999px，AUI 对完全在视口外的元素可能跳过排版，
+   JS 读到的 textContent 就是空 —— 这里照 main.html 的结论改成 1px 透明块。 */
+#rb-hud-data {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    /* 用「透明字」而不是 opacity:0。
+       AUI 对 opacity:0 的元素可能不维护文本节点，textContent 会一直返回第一次写入的值，
+       表现为 HUD 永久冻结在初始帧：原版 HUD 正常（直接 drawString，不走 DOM），
+       而 AUI HUD 恒显示「阅读器 · 空闲」，关开 HUD 也不恢复。
+       透明字仍然正常参与排版，getter 拿到的是实时文本。 */
+    color: rgba(0, 0, 0, 0);
+    font-size: 1px;
+}
+/* 错误记录槽：pull() 的 catch 把异常文本写这里，人类排查用，视觉上不存在。
+   不写进 #rb-hud-data（那个元素每帧被 Java 整体重写）。 */
+#rb-err {
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    font-size: 1px;
+    color: #b33b31;
+}
+</style>
+</head>
+<body>
+<div id="rb-hud">
+    <div id="rb-dot"></div>
+    <div id="rb-book">ReaderBridge</div>
+    <div id="rb-chap">等待数据</div>
+    <div id="rb-pct"></div>
+    <div id="rb-sent">HUD 正在初始化…</div>
+    <div id="rb-bar"><div id="rb-fill"></div></div>
+</div>
+<!--
+  数据块字段表（Java 侧 AuiHud.writeData 写入 #rb-hud-data 的 textContent，JS 每 80ms 读一次）：
+
+    f[0] ver        版本号，内容变化时 Java 侧自增
+    f[1] visible    1 = 应显示，0 = 应隐藏（与 Java 写的 display 冗余，供 JS 兜底）
+    f[2] state      off / idle / paused / ok —— 决定状态点颜色
+    f[3] book       书名（未连接时是「App 未连接」，空闲时是「阅读器 · 空闲」）
+    f[4] chapter    行内主/副文本：`章名` ␞ `进度文案`（如 "第三章 ␞ 45%"）
+    f[5] sentence   当前句（已替换掉所有换行与分隔符）
+    f[6] permille   进度千分比 0~1000（整数，避免小数解析）
+    f[7] cssX       HUD 左上角 X（CSS px，Java 已按 renderScale 换算）
+    f[8] cssY       HUD 左上角 Y（CSS px）
+
+  分隔符沿用 main.html 的约定：字段用 U+241F ␟，行内主/副文本用 U+241E ␞。
+  末尾字段（f[8] cssY）一定是数字，绝不会是空串 —— 尾随分隔符会被文本规范化
+  吃掉字段，main.html 踩过这个坑。
+
+  【重要】f 的每个元素不是 JS 原生字符串，而是 AUI/Rhino 包装过的 java.lang.String。
+  任何 .length / .substring / .split 之前必须先 toStr()，否则 .length 拿到的是
+  length() 方法对象，比较恒为 false。这就是 2026-11-25 那次 HUD 空白的根因。
+-->
+<div id="rb-hud-data"></div>
+<div id="rb-err"></div>
+<script>
+/*
+  AUI 的脚本由 Rhino 执行（老派 JS）：用 var + function，不用 let/const/箭头函数。
+  资源重载 / 页面 refresh 会重建整个 DOM 并重新执行本脚本，所以：
+    1) 初始化必须同时挂 DOMContentLoaded 和 readyState 检查（双保险）；
+    2) init 里用 started 守卫，避免两条路径各挂一个 setInterval。
+  数据流是单向的：Java → 页面。JS 不回传任何东西，本页面也没有任何交互元素。
+*/
+var SEP = "\u241F";
+var SUB = "\u241E";
+var lastRaw = "";
+var started = false;
+
+function q(id) { return document.getElementById(id); }
+
+/* ---------------------------------------------------------------------------
+   根因修复：强制把 Java 字符串转成 JS 原生字符串。
+
+   Java 侧 Element.getTextContent() 返回 java.lang.String；在 AUI 的 Rhino 里
+   这个返回值被包成 NativeJavaObject（不是 JS 原始值）。于是：
+       f[3].length            → 拿到的是 String.length() 的「方法对象」而不是 8
+       f[3].length <= 26      → 方法对象 <= 数字 ⇒ NaN 比较 ⇒ 恒为 false
+       f[3].substring(0, 25)  → 反射调用 java.lang.String.substring(0,25)
+                                在 8 个 code unit 的串上 ⇒ StringIndexOutOfBounds
+   空串同理（!s 对对象永假）。所以凡是要做字符串运算的值，一律先过 toStr()。
+   "" + v 会走 JS 的 ToPrimitive，对包装对象调 toString()，得到真正的原生串。
+--------------------------------------------------------------------------- */
+function toStr(v) {
+    if (v === null || v === undefined) { return ""; }
+    if (typeof v === "string") { return v; }
+    try {
+        return "" + v;
+    } catch (e) {
+        return "";
+    }
+}
+
+function setText(id, v) {
+    var e = q(id);
+    if (e && v !== null && v !== undefined) { e.textContent = v; }
+}
+
+/* 按字数截断。入参一律先 toStr()，并且 n 自身也做合法性校验：
+   历史 bug 就是「s 是包装对象 ⇒ s.length 不是数字 ⇒ 保护失效」，
+   这里三道闸：转字符串、n 归一化、substring 再包 try/catch。 */
+function cut(s, n) {
+    var t = toStr(s);
+    var max = n;
+    if (typeof max !== "number" || isNaN(max)) { max = 16; }
+    max = Math.floor(max);
+    if (max < 1) { max = 1; }
+    if (t.length <= max) { return t; }
+    if (max === 1) { return "\u2026"; }
+    try {
+        return t.substring(0, max - 1) + "\u2026";
+    } catch (e) {
+        return t;
+    }
+}
+
+function dotColor(state) {
+    if (state === "ok") { return "#3c8527"; }
+    if (state === "paused") { return "#f0b92d"; }
+    if (state === "idle") { return "#b6bac1"; }
+    return "#b33b31";
+}
+
+/* 统一渲染入口：render() 解析出数据后调它，空状态 / 解析失败也调它。
+   保证任何时刻四个文本槽都有内容 —— 不允许再出现「有尺寸没文字」的空胶囊。 */
+function apply(state, book, chap, pct, sent, permille, cssX, cssY) {
+    var st = toStr(state);
+    if (st !== "ok" && st !== "paused" && st !== "idle") { st = "off"; }
+
+    var hud = q("rb-hud");
+    if (hud) {
+        var cx = parseInt(toStr(cssX), 10);
+        var cy = parseInt(toStr(cssY), 10);
+        if (!isNaN(cx)) { hud.style.left = cx + "px"; }
+        if (!isNaN(cy)) { hud.style.top = cy + "px"; }
+    }
+
+    var dot = q("rb-dot");
+    if (dot) { dot.style.background = dotColor(st); }
+
+    var b = toStr(book);
+    var c = toStr(chap);
+    var p = toStr(pct);
+    var s = toStr(sent);
+
+    /* ---- 空状态兜底文案：Java 侧没给就由页面给，绝不留空 ---- */
+    if (b.length === 0) {
+        b = (st === "off") ? "App 未连接" : "ReaderBridge";
+    }
+    if (c.length === 0) {
+        if (st === "off") { c = "等待连接"; }
+        else if (st === "idle") { c = "未在朗读"; }
+        else if (st === "paused") { c = "已暂停"; }
+        else { c = "朗读中"; }
+    }
+    if (s.length === 0) {
+        if (st === "off") { s = "打开 ReaderBridge App 后自动同步"; }
+        else if (st === "idle") { s = "选择一本书开始朗读，HUD 会自动跟随"; }
+        else if (st === "paused") { s = "已暂停，按播放键继续"; }
+        else { s = "\u2026"; }
+    }
+    if (p.length === 0) {
+        p = (st === "ok" || st === "paused") ? "0%" : "--";
+    }
+
+    setText("rb-book", cut(b, 26));
+    setText("rb-chap", cut(c, 14));
+    /* 暂停只在副文本里加两个字，主视觉靠状态点变金色 */
+    if (st === "paused" && p !== "--") { p = p + " · 暂停"; }
+    setText("rb-pct", cut(p, 14));
+    setText("rb-sent", cut(s, 54));
+
+    var pm = parseInt(toStr(permille), 10);
+    if (isNaN(pm)) { pm = 0; }
+    if (pm < 0) { pm = 0; }
+    if (pm > 1000) { pm = 1000; }
+    var fill = q("rb-fill");
+    /* 用整数百分比：小数百分号在自研 CSS 引擎里没验证过，取整最稳 */
+    if (fill) { fill.style.width = Math.floor(pm / 10) + "%"; }
+}
+
+/* 没有数据 / 数据残缺时的空状态。故意不 return，必须画点东西出来。 */
+function renderEmpty() {
+    apply("off", "App 未连接", "等待连接", "--", "打开 ReaderBridge App 后自动同步", 0, "", "");
+}
+
+function render(rawIn) {
+    var raw = toStr(rawIn);
+    var f = raw.split(SEP);
+    /* 字段数校验必须和 Java 侧实际字段数对齐（9 个：ver + 8）。
+       不满足就画空状态，不要静默 return —— 静默 return 是「空白胶囊」的另一半原因。 */
+    if (f.length < 9) {
+        renderEmpty();
+        return;
+    }
+
+    var visible = parseInt(toStr(f[1]), 10);
+    var hud = q("rb-hud");
+    if (hud) {
+        /* 显隐的权威来源是 Java 侧写的内联 display:block / none。
+           这里只做「单向」兜底：JS 只负责藏、不负责露，避免 JS 把 Java 刚藏起来的
+           HUD 又显示出来（两套逻辑抢同一个属性时，藏优先永远是对的）。 */
+        if (!isNaN(visible) && visible === 0) {
+            hud.style.display = "none";
+        }
+    }
+
+    var state = toStr(f[2]);
+    var book = toStr(f[3]);
+
+    /* f[4] = 章名 ␞ 进度文案。split 结果可能是 1 个元素（没有 ␞），
+       也可能有多个（理论上不会，Java 侧已把该字符从原文里剔掉）—— 下标一律带判空。 */
+    var parts = toStr(f[4]).split(SUB);
+    var chap = parts.length > 0 ? toStr(parts[0]) : "";
+    var pctText = parts.length > 1 ? toStr(parts[1]) : "";
+
+    apply(state, book, chap, pctText, f[5], f[6], f[7], f[8]);
+}
+
+/*
+  pull() 整个函数体包 try/catch —— 这是本页的硬约束，不是可选装饰。
+
+  AUI 的 ClientScheduler 用 repeat=true 跑 setInterval；回调抛一次异常就打一行
+  「[AUI Scheduler] client timer task failed repeat=true」，并且该任务后续全部失效。
+  也就是说：只要有一次未捕获异常，HUD 就永久停在崩溃前的样子（实机表现 = 空胶囊）。
+
+  catch 里不 console.error（AUI 的 console 不保证存在），只把错误文本写进
+  #rb-err 这个 1px 透明元素，供 dump 页面时人工查看。
+*/
+/* 同一个字符串连续出现超过 15 次轮询（约 1.2s）就强制重渲染一次。
+   只留「raw === lastRaw 就 return」这一条判据时，只要 AUI 的 textContent getter
+   滞后（返回旧值），HUD 就永久冻结在那一帧。apply() 幂等，重复调用无副作用。 */
+var idleTicks = 0;
+
+function pull() {
+    /* 数据通道已移到 Java 侧：AuiHud.applyText() 每帧直接写 rb-book / rb-chap / rb-pct /
+       rb-sent 的 textContent，不再经过 #rb-hud-data。
+       原因：在本引擎上 q()（document.getElementById）拿不到元素，返回 null 后这里就
+       return 了，整条 JS 通道从未真正画过一次，HUD 只能停在下方 HTML 的静态初始文本
+       （「阅读器 · 空闲」）。这是「原版 HUD 正常、AUI 永远空闲」的根因。
+       这里直接短路，避免将来 getter 一旦恢复就用滞后的旧 raw 覆盖 Java 刚写好的文案。
+       函数体保留作诊断参考，不再参与渲染。 */
+    if (true) { return; }
+    try {
+        var e = q("rb-hud-data");
+        if (!e) { return; }
+        var raw = toStr(e.textContent);
+        if (raw.length === 0) {
+            if (lastRaw !== "\u0000empty") {
+                lastRaw = "\u0000empty";
+                idleTicks = 0;
+                renderEmpty();
+            }
+            return;
+        }
+        if (raw === lastRaw) {
+            /* 兜底：强制重渲染读的仍是同一个 raw，救不回 getter 滞后，
+               但能覆盖「首次 pull 早于 Java 写入」这类边缘情况。 */
+            idleTicks++;
+            if (idleTicks >= 15) { idleTicks = 0; render(raw); }
+            return;
+        }
+        idleTicks = 0;
+        lastRaw = raw;
+        render(raw);
+    } catch (err) {
+        try {
+            var box = q("rb-err");
+            if (box) { box.textContent = toStr(err); }
+        } catch (ignored) {
+            /* 连错误槽都没有就彻底放弃，绝不把异常抛回 AUI scheduler */
+        }
+    }
+}
+
+function init() {
+    if (started) { return; }
+    started = true;
+    lastRaw = "";
+    idleTicks = 0;
+    pull();
+    setInterval(pull, 80);
+}
+
+document.addEventListener("DOMContentLoaded", init);
+if (document.readyState === "complete" || document.readyState === "interactive") {
+    init();
+}
+</script>
+</body>
+</html>

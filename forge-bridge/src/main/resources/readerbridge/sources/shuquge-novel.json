@@ -1,0 +1,33 @@
+{
+  "_comment": "默认不启用：本站没有站内搜索接口，规则只能用 8 个分类页拼起来再本地过滤关键词（filter_keyword），实测对一本已完结的书 10.6 秒才出 0 结果，而 quanben 1.0 秒、readnovel 0.3 秒。这个 10.6 秒是恒定开销，会拖死游戏内每一次搜索。想用它就把下面的 \"enabled\" 改成 true —— 加载器只跳过 enabled=false 的文件，不改选择器就不会影响其它书源。",
+  "enabled": false,
+  "id": "shuquge-novel",
+  "name": "书本网·小说",
+  "author": "shuquge.net",
+  "baseUrl": "https://www.shuquge.net",
+  "timeoutMs": 20000,
+  "headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://www.shuquge.net/"
+  },
+  "search": {
+    "url": "/fenlei/1_1/|/fenlei/2_1/|/fenlei/3_1/|/fenlei/4_1/|/fenlei/5_1/|/fenlei/6_1/|/fenlei/7_1/|/fenlei/8_1/",
+    "list": "div.item dl dt a",
+    "title": "text",
+    "key": "attr:href",
+    "filter_keyword": true
+  },
+  "chapters": {
+    "url": "{bookKey}",
+    "list": "div#list dl a[rel=chapter][title^=第]",
+    "title": "text",
+    "key": "attr:href"
+  },
+  "content": {
+    "url": "{chapterKey}",
+    "list": "div#booktxt p",
+    "remove": ["div#booktxt p:first-child"]
+  }
+}

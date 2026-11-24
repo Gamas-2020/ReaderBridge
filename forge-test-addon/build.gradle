@@ -1,0 +1,158 @@
+// forge-test-addon —— 最小测试附属模组
+//
+// 目的：证明「第三方模组只要依赖 forge-bridge 的 jar（或 classes 目录），
+// 就能通过 ReaderBridgeProvider 拿到 API，并收到被派发到主线程的状态回调」。
+//
+// 构建顺序要求：必须先构建 forge-bridge（先 build，再 build 本工程）。
+// 依赖方式见下方 dependencies 注释。
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, " +
+        "JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'})"
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', ''
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+
+            // -------------------------------------------------------------------
+            // 让 FML 在本工程的 dev run 里也把 forge-bridge 当作一个“爆炸目录 mod”加载。
+            //
+            // 原理：dev 环境下 FML 从环境变量 MOD_CLASSES 读取 mod 的爆炸目录，格式为
+            //   modid%%resources目录;modid%%classes目录   （Windows 用 ; 分隔）
+            // ForgeGradle 只会为当前工程自己的 sourceSet 生成该变量，跨工程无法自动感知，
+            // 所以这里手动追加 bridge 的两个输出目录。
+            //   {source_roots} 是 ForgeGradle 的 token，会被替换为本工程自身的 mod 目录列表。
+            //
+            // 这样 bridge 的 META-INF/mods.toml 会被 FML 发现，bridge 与本模组都会出现在
+            // Mods 列表里；本模组通过 ReaderBridgeProvider 拿到的就是同一份单例。
+            // -------------------------------------------------------------------
+            // -------------------------------------------------------------------
+            // 让 bridge 在 dev 环境的 runServer/runClient 里一起被加载。
+            //
+            // 背景：dev 环境下 FML 只扫描 MOD_CLASSES 登记的「爆炸目录」，
+            // ForgeGradle 不会跨工程自动登记别的工程的 sourceSet，所以这里手动补上。
+            //
+            // 两个坑（都实测踩过）：
+            //   1) 值里不能出现 '{' —— 含 '{' 时 FG 会走 Utils.replaceTokens 的 token 展开，
+            //      展开过程会把 Windows 反斜杠当转义序列吃掉（\n -> 换行、\f -> 换页…），
+            //      路径被破坏，启动报 "Invalid paths argument, contained no existing paths"。
+            //      因此这里不使用 {source_roots} token，且把路径统一转成正斜杠。
+            //   2) 每个 mod 必须同时登记 resources 与 classes 两个目录：
+            //      mods.toml 在 resources 里，class 在 classes 里，缺一个都会加载失败。
+            //   3) 顺序：resources 在前、classes 在后，与 ForgeGradle 自己的生成顺序一致。
+            // -------------------------------------------------------------------
+            def toGwPath = { String relPath -> project.file(relPath).absolutePath.replace('\\', '/') }
+            def bridgeResources = toGwPath('../forge-bridge/build/resources/main')
+            def bridgeClasses = toGwPath('../forge-bridge/build/classes/java/main')
+            def ownResources = toGwPath('build/resources/main')
+            def ownClasses = toGwPath('build/classes/java/main')
+            environment 'MOD_CLASSES', [
+                    "${mod_id}%%${ownResources}",
+                    "${mod_id}%%${ownClasses}",
+                    "readerbridge%%${bridgeResources}",
+                    "readerbridge%%${bridgeClasses}"
+            ].join(File.pathSeparator)
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+    }
+}
+
+repositories {
+    maven {
+        name = 'ForgeMaven'
+        url = uri('https://maven.minecraftforge.net/')
+    }
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // ---------------------------------------------------------------------------
+    // 对 bridge 的依赖：直接使用 bridge 工程的编译产物目录（classes + resources）。
+    //
+    // 为什么用目录而不是 jar：
+    //   Forge 生产 jar 经过 reobf，方法名是 srg 中间名；而本工程在 dev 环境（runServer/runClient）
+    //   使用 official 名，直接引用 reobf jar 会出现 NoSuchMethodError / NoClassDefFoundError。
+    //   使用 forge-bridge/build/classes/java/main（official 名）与实际发布 jar 时的用法等价，
+    //   同时 build/resources/main 里的 META-INF/mods.toml 也会被 FML 的 classpath 扫描发现，
+    //   从而让 bridge 在本工程的 runServer/runClient 中一起被加载。
+    //
+    // 构建顺序：先 `cd ../forge-bridge && gradlew build`，再构建本工程。
+    // ---------------------------------------------------------------------------
+    implementation files(
+            '../forge-bridge/build/classes/java/main',
+            '../forge-bridge/build/resources/main'
+    )
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            forge_version          : forge_version,
+            forge_version_range    : forge_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    // 资源文件按 UTF-8 读取/写出：否则 Windows 默认 GBK 会让 mods.toml 里的中文变成乱码
+    filteringCharset = 'UTF-8'
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'   : mod_id,
+                'Specification-Vendor'  : mod_authors,
+                'Specification-Version' : '1',
+                'Implementation-Title'  : project.name,
+                'Implementation-Version': project.jar.archiveVersion,
+                'Implementation-Vendor' : mod_authors,
+        ])
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

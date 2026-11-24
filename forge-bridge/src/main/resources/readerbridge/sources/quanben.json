@@ -1,0 +1,24 @@
+{
+  "id": "quanben",
+  "name": "全本小说网",
+  "author": "readerbridge",
+  "baseUrl": "https://www.quanben.io",
+  "timeoutMs": 20000,
+  "search": {
+    "url": "https://www.quanben.io/index.php?c=book&a=search&keywords={keyword}",
+    "list": "div.list2 h3 a",
+    "title": "text",
+    "key": "attr:href",
+    "filterKeyword": false
+  },
+  "chapters": {
+    "url": "/amp{bookPath}list.html",
+    "list": "ul.list3 li a",
+    "title": "text",
+    "key": "attr:href"
+  },
+  "content": {
+    "url": "{chapterKey}",
+    "list": "div.articlebody p:not(:first-child)"
+  }
+}

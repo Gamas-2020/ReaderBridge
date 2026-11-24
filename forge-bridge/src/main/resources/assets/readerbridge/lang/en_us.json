@@ -1,0 +1,9 @@
+{
+    "key.categories.readerbridge": "Reader Bridge",
+    "key.readerbridge.toggle_hud": "Toggle reading HUD",
+    "key.readerbridge.hud_position": "Edit reading HUD position",
+    "key.readerbridge.open_panel": "Open reader panel",
+    "key.readerbridge.play_pause": "Play / Pause reading",
+    "key.readerbridge.next_chapter": "Next chapter",
+    "key.readerbridge.prev_chapter": "Previous chapter"
+}

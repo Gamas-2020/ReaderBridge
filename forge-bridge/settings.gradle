@@ -1,0 +1,17 @@
+// Gradle 设置：固定插件仓库与项目名。
+//
+// 说明：这里显式声明 pluginManagement 仓库，确保 ForgeGradle 6 的插件标记
+// (net.minecraftforge.gradle.gradle.plugin) 能从 Forge 的 Maven 仓库解析，
+// 同时回落到 Gradle 官方插件门户与 Maven Central。
+pluginManagement {
+    repositories {
+        maven {
+            name = 'ForgeMaven'
+            url = uri('https://maven.minecraftforge.net/')
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'forge-bridge'

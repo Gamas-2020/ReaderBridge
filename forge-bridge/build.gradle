@@ -1,0 +1,171 @@
+// forge-bridge —— Reader App 与 Minecraft 之间的桥接模组
+//
+// 构建体系：ForgeGradle 6 + Gradle 8.8 + Java 17 + Mojang official 映射。
+// 所有源码注释使用简体中文，源码文件统一 UTF-8 编码。
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// Mojang 从 1.18 起向终端用户分发 Java 17，因此目标语言级别固定为 17。
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, " +
+        "JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), " +
+        "Arch: ${System.getProperty 'os.arch'}"
+
+minecraft {
+    // ForgeGradle 使用 Mojang 官方映射（不是 NeoForge/loom 体系）
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', ''
+            property 'forge.logging.console.level', 'debug'
+            // 让开发环境也能加载本模组
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+    }
+}
+
+repositories {
+    maven {
+        name = 'ForgeMaven'
+        url = uri('https://maven.minecraftforge.net/')
+    }
+    mavenCentral()
+}
+
+dependencies {
+    // Minecraft + Forge 本体；JSON 解析复用 Minecraft 自带的 Gson，不引入任何额外依赖。
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // JLayer 1.0.1（javazoom.jl.decoder）：JDK 17 没有 mp3 解码器，朗读音频要纯 Java 解 mp3
+    // 才能喂 OpenAL（MCI 通道拿不到播放位置/滤波/3D）。
+    // 必须用 files()：构建全程 --offline，且它不在任何已缓存的仓库里。
+    // 运行时同样需要该类 —— 见下面 embed 配置（会合并进 mod jar）。
+    implementation files('libs/jlayer-1.0.1.jar')
+
+    // 注意：这里**不能**再引入 jsoup。把第三方浏览器的类平铺进 mod jar 会让本模组
+    // 导出 org.jsoup.* 包，与整合包里其它自带 jsoup 的模组撞包，Java 模块系统在 mod
+    // 扫描之前就抛 java.lang.module.ResolutionException 把游戏打死（"Modules readerbridge
+    // and org.jsoup export package org.jsoup.safety to module ..."）。
+    // HTML 解析改用自带的最小实现 client/source/MiniHtml.java（纯 JDK）。
+}
+
+// ---------------------------------------------------------------------------
+// JLayer 随模组一起分发
+//
+// 只写 implementation files(...) 的话，部署时必须额外把 jlayer jar 丢进 mods/，
+// 否则运行期 NoClassDefFoundError。这里用独立配置把 jar 内容并进 mod jar，
+// 保证"只拷一个 mod jar 就能跑"。第三方类没有 obf 映射，reobf 会原样保留。
+// ---------------------------------------------------------------------------
+configurations {
+    embed
+}
+
+dependencies {
+    embed files('libs/jlayer-1.0.1.jar')
+
+    // 晴雪UI（ApricityUI）是「可选前置」：只在编译期可见，绝不 embed。
+    // 与 jsoup 的教训一致 —— 把别人的类平铺进本模组 jar 会让本模组也导出它的包，
+    // 与整合包里其它同包模组撞车，Java 模块系统在 mod 扫描前抛 ResolutionException，游戏静默秒退。
+    // 运行时由 mods 目录里的晴雪UI 提供；没装时 AuiBridge.available() 为 false，回退原版界面。
+    compileOnly files('libs/ApricityUI-forge-1.20.1-1.3.1.jar')
+    // 只嵌 JLayer。不要再往这里加 HTML 解析库：任何第三方库平铺进 mod jar 都会
+    // 让本模组「导出」它的包，导致与整合包内其它模组的同名包冲突（见上面 dependencies 注释）。
+}
+
+// 把 gradle.properties 中的元数据注入 mods.toml / pack.mcmeta
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            forge_version          : forge_version,
+            forge_version_range    : forge_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    // 资源文件按 UTF-8 读取/写出：否则 Windows 默认 GBK 会让 mods.toml 里的中文变成乱码
+    filteringCharset = 'UTF-8'
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'   : mod_id,
+                'Specification-Vendor'  : mod_authors,
+                'Specification-Version' : '1',
+                'Implementation-Title'  : project.name,
+                'Implementation-Version': project.jar.archiveVersion,
+                'Implementation-Vendor' : mod_authors,
+        ])
+    }
+}
+
+// 发布到本地目录仓库：forge-test-addon 可选择从 build/repo 解析。
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        maven {
+            url = layout.projectDirectory.dir('build/repo')
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    // 源码含中文字面量/注释，显式指定 UTF-8 避免平台默认编码导致乱码或编译失败。
+    options.encoding = 'UTF-8'
+}
+
+// JLayer 的类并入 mod jar（见上面 embed 配置的说明）。
+tasks.named('jar', Jar).configure {
+    from({ configurations.embed.collect { it.isDirectory() ? it : zipTree(it) } }) {
+        exclude 'META-INF/MANIFEST.MF'
+        exclude 'META-INF/*.SF'
+        exclude 'META-INF/*.DSA'
+        exclude 'META-INF/*.RSA'
+        // 防御性排除：embed 里若混进 multi-release jar，META-INF/versions/*/module-info.class
+        // 会让 Forge 的 securejarhandler 把本模组当成显式模块，导致模块解析失败。
+        exclude 'META-INF/versions/**'
+        exclude 'module-info.class'
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}

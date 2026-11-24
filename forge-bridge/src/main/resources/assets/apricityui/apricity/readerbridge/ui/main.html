@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!--
+  三个 meta 是 AUI 的硬要求，缺一不可：
+    aui-font-mode=web        网页字体规则（否则走原版像素字体，中文发糊）
+    aui-viewport=browser     视口跟随游戏窗口；不写则逻辑视口尺寸失控，布局全错
+    aui-mouse-events=intercept 页面才接收鼠标事件；不写点击会落到游戏而不是页面
+-->
+<meta name="aui-font-mode" content="web">
+<meta name="aui-viewport" content="mode=browser">
+<meta name="aui-mouse-events" content="intercept">
+<link rel="stylesheet" href="/apricityui/theme/ore/ore.css">
+<style>
+/*
+  颜色全部写死，与 ore 主题的基岩版（OreUI）调色板一致：
+    canvas #202124 / surface #48494a / surface-deep #313233
+    edge #1e1e1f / edge-light #77797c / green #3c8527 / green-hover #2a641c
+    gold #f0b92d / red #b33b31 / ink #f4f5f7 / ink-muted #b6bac1
+  刻意不用 var(--surface) 这类 CSS 变量和 calc()：AUI 自研 CSS 引擎对高级特性的
+  支持有边界，硬编码是零风险路径。
+*/
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    /* overflow:hidden 是关键：AUI 的视口本身可滚动，页面内容一旦超出就会
+       把鼠标滚轮吞掉（目录页滚动会滚整页而不是滚列表）。面板是全屏固定布局，
+       内容永不溢出，所以直接禁掉滚动。 */
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.62);
+    color: #f4f5f7;
+    font-family: "Microsoft YaHei", "SimHei", sans-serif;
+    font-size: 13px;
+}
+#app {
+    position: absolute;
+    /* 撑满视口而不是写死 820×452：aui-viewport=mode=browser 的逻辑视口等于
+       游戏窗口像素（1920×1080 面板下），写死像素会只占左上角不到四分之一屏。
+       用百分比后尺寸自动跟随窗口，窗口越大面板越大。 */
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background: #202124;
+    border: 2px solid #1e1e1f;
+    padding: 0;
+}
+/* ---- 顶栏 ---- */
+#bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 34px;
+    background: #313233;
+    border-bottom: 2px solid #1e1e1f;
+}
+.tab {
+    position: absolute;
+    top: 0;
+    width: 84px;
+    height: 32px;
+    line-height: 32px;
+    text-align: center;
+    color: #b6bac1;
+    font-size: 13px;
+    border-right: 1px solid #1e1e1f;
+}
+.tab-active {
+    background: #48494a;
+    color: #f4f5f7;
+    border-bottom: 2px solid #3c8527;
+}
+#tab0 { left: 0; }
+#tab1 { left: 84px; }
+#tab2 { left: 168px; }
+#tab3 { left: 252px; }
+#tab4 { left: 336px; }
+#rb-close {
+    position: absolute;
+    /* 贴右用百分比：AUI 自研 CSS 不支持 calc()，写 left:784px 在宽屏下会飘到屏幕中间 */
+    left: 96%;
+    top: 5px;
+    width: 28px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    background: #b33b31;
+    color: #f4f5f7;
+    font-size: 13px;
+    border: 1px solid #1e1e1f;
+}
+/* ---- 视图头 ---- */
+#vhead {
+    position: absolute;
+    left: 12px;
+    top: 42px;
+    width: 96%;
+    height: 20px;
+    line-height: 20px;
+    color: #f0b92d;
+    font-size: 13px;
+}
+/* ---- 本地 txt：上传 / 刷新 ----
+   只在书架视图可见（其余视图由 render() 把 opacity 归零；Java 侧动作内部还会再判一次 tab，
+   因为 AUI 的 opacity:0 元素仍可能吃到点击）。
+   宽度用百分比而不是固定 px：AUI 的视口等于窗口像素，窄窗口下固定 px 会滑出屏幕或互相重叠。
+   78%+9%=87% < 88%，两个按钮在任何窗口宽度下都不会叠在一起。 */
+#rb-upload, #rb-refresh {
+    position: absolute;
+    top: 40px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    background: #48494a;
+    border: 1px solid #1e1e1f;
+    color: #f4f5f7;
+    font-size: 12px;
+}
+#rb-upload  { left: 78%; width: 9%; }
+#rb-refresh { left: 88%; width: 9%; }
+/* ---- 列表行（固定 8 槽，JS 只改文本，不做动态 DOM）---- */
+.row {
+    position: absolute;
+    left: 12px;
+    width: 96%;
+    height: 26px;
+    line-height: 26px;
+    padding-left: 8px;
+    background: #313233;
+    border: 1px solid #1e1e1f;
+    color: #f4f5f7;
+    font-size: 13px;
+}
+.row-hi {
+    background: #48494a;
+    border: 1px solid #77797c;
+}
+/* 行槽位：24 个，步长 28px（行高 26 + 2 border），从 #vhead 下沿 66px 起。
+   最后一行 row23 top = 66 + 28*23 = 710，下沿 = 710 + 26 + 2 = 738px；
+   底部固定件 #kwbar(742, 下沿 768) + #vfoot(770, 下沿 788) + #pgprev(768 高 22, 下沿 790)，
+   播放条上沿 = 视口高 - 120，所以窗口逻辑高 >= 910 时不重叠
+   （1920x1080 全屏安全；1280x720 只够 16 行，24 行在 720p 会被播放条压住）。
+   为什么是 24 而不是更高：AUI 自研 CSS 不支持 calc()/flex，行位置只能写死 px，
+   无法按视口高自适应，行数只能是保守固定值。24 行 + 底部件吃掉 790px，
+   要求窗口 >= 910px，是「1080p 全屏可用」的最大值。
+   【新增行必须同时改 AuiScreens.ROWS 与本文件的 ROWS 常量，并同步 #del*、#kwbar、
+   #vfoot、#pgprev/#pgnext、#sctrack/#scbot 的位置 —— 五处是一组】 */
+#row0  { top: 66px; }
+#row1  { top: 94px; }
+#row2  { top: 122px; }
+#row3  { top: 150px; }
+#row4  { top: 178px; }
+#row5  { top: 206px; }
+#row6  { top: 234px; }
+#row7  { top: 262px; }
+#row8  { top: 290px; }
+#row9  { top: 318px; }
+#row10 { top: 346px; }
+#row11 { top: 374px; }
+#row12 { top: 402px; }
+#row13 { top: 430px; }
+#row14 { top: 458px; }
+#row15 { top: 486px; }
+#row16 { top: 514px; }
+#row17 { top: 542px; }
+#row18 { top: 570px; }
+#row19 { top: 598px; }
+#row20 { top: 626px; }
+#row21 { top: 654px; }
+#row22 { top: 682px; }
+#row23 { top: 710px; }
+/* ---- 行尾删除热区（书架视图可见，其它视图隐藏）----
+   位置刻意贴行右缘、但不与右侧滚动条（#sctop/#scbot 在 right:2px、宽 18px）重叠：
+   行左边距 12px + 宽 96%，右缘 ≈ 0.96×视口 + 12px，所以 left:96% 基本就是行尾。
+   固定槽位必须写在 HTML 里（Java 侧 bind() 时按 id 绑事件，运行时创建 DOM 收不到点击）。
+   常态按钮色与 .pbtn 一致；待确认时由 JS 把整行背景改成 #b33b31。 */
+.del {
+    position: absolute;
+    left: 96%;
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    background: #48494a;
+    border: 1px solid #1e1e1f;
+    color: #f4f5f7;
+    font-size: 12px;
+}
+/* 删除热区 top = 对应行 top + 4（垂直居中：行高 28 含 border，热区高 18）。 */
+#del0  { top: 70px; }
+#del1  { top: 98px; }
+#del2  { top: 126px; }
+#del3  { top: 154px; }
+#del4  { top: 182px; }
+#del5  { top: 210px; }
+#del6  { top: 238px; }
+#del7  { top: 266px; }
+#del8  { top: 294px; }
+#del9  { top: 322px; }
+#del10 { top: 350px; }
+#del11 { top: 378px; }
+#del12 { top: 406px; }
+#del13 { top: 434px; }
+#del14 { top: 462px; }
+#del15 { top: 490px; }
+#del16 { top: 518px; }
+#del17 { top: 546px; }
+#del18 { top: 574px; }
+#del19 { top: 602px; }
+#del20 { top: 630px; }
+#del21 { top: 658px; }
+#del22 { top: 686px; }
+#del23 { top: 714px; }
+/* ---- 搜索栏 ----
+   top 292（8 槽）→ 406（12 槽）→ 518（16 槽）→ 742（24 槽）：
+   row23 下沿 = 710 + 26 + 2 = 738，留 4px 间隙。 */
+#kwbar {
+    position: absolute;
+    left: 12px;
+    top: 742px;
+    width: 96%;
+    height: 26px;
+}
+#rb-kw {
+    position: absolute;
+    left: 0;
+    top: 0;
+    /* 输入框吃满整行（原来的 78% 是给右边「搜索」按钮让位，按钮已挪到下面一行）。 */
+    width: 100%;
+    height: 22px;
+    padding-left: 6px;
+    background: #313233;
+    border: 2px solid #1e1e1f;
+    color: #f4f5f7;
+    font-size: 13px;
+}
+/* 搜索按钮独占一行，压在搜索框正下方（top 28 = 搜索框高 26 + 2 间距）。
+   坐标系仍相对 #kwbar（742），所以绝对位置 = 770，宽度跟着 kwbar 的 96% 走。 */
+#rb-go {
+    position: absolute;
+    left: 0;
+    top: 28px;
+    width: 100%;
+    height: 24px;
+    line-height: 24px;
+    text-align: center;
+    background: #3c8527;
+    border: 2px solid #1d4d13;
+    color: #f4f5f7;
+    font-size: 13px;
+}
+/* ---- 视图脚（页码 / 翻页）----
+   纵向顺序：搜索框(742 高 26) → 搜索按钮(770 高 24) → 上页/下页(796)。
+   页码状态与翻页键同一行（右侧留白给状态文本），不再单独占一行。 */
+#vfoot {
+    position: absolute;
+    left: 176px;
+    right: 12px;
+    top: 796px;
+    height: 22px;
+    line-height: 22px;
+    color: #b6bac1;
+    font-size: 12px;
+}
+#pgprev, #pgnext {
+    position: absolute;
+    top: 796px;
+    width: 60px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    background: #48494a;
+    border: 1px solid #1e1e1f;
+    color: #f4f5f7;
+    font-size: 12px;
+}
+#pgprev { left: 12px; }
+#pgnext { left: 92px; }
+/* ---- 播放条 ---- */
+#play {
+    position: absolute;
+    left: 0;
+    /* 贴底而不是 top:352px：面板高度撑满视口后，播放条必须跟着窗口底边走，
+       否则 1080p 下会悬在屏幕中间，下面留一大片空白。 */
+    bottom: 0;
+    width: 100%;
+    height: 120px;
+    background: #313233;
+    border-top: 2px solid #1e1e1f;
+}
+#p-title {
+    position: absolute;
+    left: 12px;
+    top: 6px;
+    width: 82%;
+    height: 20px;
+    line-height: 20px;
+    color: #f4f5f7;
+    font-size: 14px;
+}
+#p-track {
+    position: absolute;
+    left: 12px;
+    top: 30px;
+    width: 96%;
+    height: 4px;
+    background: #1e1e1f;
+}
+#p-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0%;
+    height: 4px;
+    background: #3c8527;
+}
+.pbtn {
+    position: absolute;
+    top: 42px;
+    height: 24px;
+    line-height: 24px;
+    text-align: center;
+    background: #48494a;
+    border: 1px solid #1e1e1f;
+    color: #f4f5f7;
+    font-size: 12px;
+}
+.pbtn-main {
+    background: #3c8527;
+    border: 1px solid #1d4d13;
+}
+/* 播放条一行放 10 个按钮：上一章 / 播放 / 下一章 / 重新生成 / 语速 / 音色 / 3D文字 / 音量− 100% +。
+   右边界压到 698px（窗口内容宽 702px）—— 加「重新生成」时刻意没有扩窗口，
+   因为扩窗口会让已经调好的行高、列宽、底部坐标全部失效。 */
+#rb-prev  { left: 12px;  width: 64px; }
+#rb-play  { left: 80px;  width: 64px; }
+#rb-next  { left: 148px; width: 64px; }
+#rb-regen { left: 216px; width: 76px; }
+#rb-speed { left: 296px; width: 56px; }
+#rb-voice { left: 356px; width: 136px; }
+#rb-hud   { left: 496px; width: 88px; }
+/* 独立音量：− 100% +（紧跟「3D文字」右侧，就是播放条这一行的空隙）。
+   只作用于模组自己播放的 TTS，与 MC 主音量/音乐/语音无关。
+   刻意不用 input range：AUI 的 Event 只有 type/target/detail，拿不到滚轮/拖拽增量，
+   所以和侧边滚动条（sctop/scbot）一样用两个点击按钮步进 10%。 */
+#rb-vol-down { left: 588px; width: 22px; }
+#rb-vol      { left: 614px; width: 58px; }
+#rb-vol-up   { left: 676px; width: 22px; }
+#p-status {
+    position: absolute;
+    left: 12px;
+    top: 72px;
+    width: 96%;
+    height: 18px;
+    line-height: 18px;
+    color: #b6bac1;
+    font-size: 12px;
+}
+#rb-data {
+    /* 数据槽：不参与视觉，但必须留在视口内。
+       早期用 left:-9999px 把它挪出屏幕，AUI 的排版/文本缓存对完全在视口外的元素
+       可能直接跳过，页面 JS 读到的 textContent 就是空 —— 表现为所有视图一起空白。
+       改成 1px 透明块后仍不可见，但一定参与排版。 */
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    font-size: 1px;
+}
+</style>
+</head>
+<body class="ore-theme">
+<div id="app">
+    <div id="bar">
+        <div class="tab" id="tab0">书架</div>
+        <div class="tab" id="tab1">搜索</div>
+        <div class="tab" id="tab2">目录</div>
+        <div class="tab" id="tab3">正文</div>
+        <div class="tab" id="tab4">设置</div>
+        <div id="rb-close">X</div>
+    </div>
+    <div id="vhead">—</div>
+    <!-- 本地 txt：上传（系统文件选择器，失败退 explorer.exe 打开 books 文件夹）/ 刷新（重扫）。
+         必须是静态元素：AUI 只给 bind() 时已存在的节点派发事件，运行时创建的 DOM 收不到点击。
+         Java 侧绑定见 AuiScreens.bind() 里的 rb-upload / rb-refresh。 -->
+    <div id="rb-upload">上传</div>
+    <div id="rb-refresh">刷新</div>
+    <div class="row" id="row0">—</div>
+    <div class="row" id="row1"></div>
+    <div class="row" id="row2"></div>
+    <div class="row" id="row3"></div>
+    <div class="row" id="row4"></div>
+    <div class="row" id="row5"></div>
+    <div class="row" id="row6"></div>
+    <div class="row" id="row7"></div>
+    <div class="row" id="row8"></div>
+    <div class="row" id="row9"></div>
+    <div class="row" id="row10"></div>
+    <div class="row" id="row11"></div>
+    <div class="row" id="row12"></div>
+    <div class="row" id="row13"></div>
+    <div class="row" id="row14"></div>
+    <div class="row" id="row15"></div>
+    <div class="row" id="row16"></div>
+    <div class="row" id="row17"></div>
+    <div class="row" id="row18"></div>
+    <div class="row" id="row19"></div>
+    <div class="row" id="row20"></div>
+    <div class="row" id="row21"></div>
+    <div class="row" id="row22"></div>
+    <div class="row" id="row23"></div>
+    <!-- 行尾删除热区：24 个固定槽位（与 ROWS 一一对应），只改透明度而不创建/删除 DOM
+         （AUI 只认页面里已有的元素）。点击一律走 Java 侧二次确认：
+         第一下只记 pendingDelete，3 秒内再点同一本才真删。 -->
+    <div class="del" id="del0">×</div>
+    <div class="del" id="del1">×</div>
+    <div class="del" id="del2">×</div>
+    <div class="del" id="del3">×</div>
+    <div class="del" id="del4">×</div>
+    <div class="del" id="del5">×</div>
+    <div class="del" id="del6">×</div>
+    <div class="del" id="del7">×</div>
+    <div class="del" id="del8">×</div>
+    <div class="del" id="del9">×</div>
+    <div class="del" id="del10">×</div>
+    <div class="del" id="del11">×</div>
+    <div class="del" id="del12">×</div>
+    <div class="del" id="del13">×</div>
+    <div class="del" id="del14">×</div>
+    <div class="del" id="del15">×</div>
+    <div class="del" id="del16">×</div>
+    <div class="del" id="del17">×</div>
+    <div class="del" id="del18">×</div>
+    <div class="del" id="del19">×</div>
+    <div class="del" id="del20">×</div>
+    <div class="del" id="del21">×</div>
+    <div class="del" id="del22">×</div>
+    <div class="del" id="del23">×</div>
+    <div id="kwbar">
+        <input id="rb-kw" type="text" placeholder="输入书名或作者后点搜索">
+        <div id="rb-go">搜索</div>
+    </div>
+    <div id="vfoot">—</div>
+    <div id="pgprev">上页</div>
+    <div id="pgnext">下页</div>
+    <div id="play">
+        <div id="p-title">未在朗读</div>
+        <div id="p-track"><div id="p-fill"></div></div>
+        <div class="pbtn pbtn-main" id="rb-prev">上一章</div>
+        <div class="pbtn" id="rb-play">播放</div>
+        <div class="pbtn" id="rb-next">下一章</div>
+        <div class="pbtn" id="rb-regen">重新生成</div>
+        <div class="pbtn" id="rb-speed">1.0x</div>
+        <div class="pbtn" id="rb-voice">音色</div>
+        <div class="pbtn" id="rb-hud">3D文字</div>
+        <!-- 独立音量（TTS 专属）。−/+ 各步进 10%，中间显示当前百分比。
+             减号用 ASCII '-' 而不是 U+2212：AUI 是自研渲染，字体可能没有 U+2212 这个码位，
+             缺字会显示成空白方块，用户就看不见「-」了。 -->
+        <div class="pbtn" id="rb-vol-down">-</div>
+        <div class="pbtn" id="rb-vol">100%</div>
+        <div class="pbtn" id="rb-vol-up">+</div>
+        <div id="p-status">—</div>
+    </div>
+    <!-- Java 侧把整份状态文本塞进这里，JS 轮询读取后渲染。
+         用两个可见分隔符而不是控制字符：控制字符可能被文本节点规范化吃掉。
+         U+241F ␟ 分隔字段，U+241E ␞ 分隔行内主/副文本。 -->
+    <!-- 侧边滚动条：AUI 的事件对象只有 type/target/detail，拿不到滚轮增量，
+     所以不用 wheel，改成两个可点按钮。贴在最右侧空白带，不遮挡行文字。 -->
+<div id="sctop" style="position:absolute; right:2px; top:56px; width:18px; height:16px; background:#48494a; color:#f4f5f7; font-size:11px; text-align:center; line-height:16px;">▲</div>
+<div id="sctrack" style="position:absolute; right:7px; top:76px; width:8px; height:654px; background:#313233;"></div>
+<div id="scbot" style="position:absolute; right:2px; top:734px; width:18px; height:16px; background:#48494a; color:#f4f5f7; font-size:11px; text-align:center; line-height:16px;">▼</div>
+<div id="rb-data"></div>
+</div>
+<script>
+/*
+  AUI 的脚本由 Rhino 执行（老派 JS 环境）：用 var + function，不用 let/const/箭头函数。
+  页面 refresh 会重建整个 DOM，所以初始化必须挂 DOMContentLoaded，每次重建重新执行。
+
+  数据流是单向的：
+    Java 侧 writeState() 把整份状态写进 #rb-data 的 textContent（末位带版本号）
+    JS 侧每 80ms 读一次，版本号变了才重渲染（AUI 排版开销大，不能每帧重排）
+    JS 侧不向 Java 发指令：所有点击事件由 Java 侧 Element.addEventListener 绑定，
+    搜索框内容由 Java 侧 getValue() 读取。
+*/
+var SEP = "\u241F";
+var SUB = "\u241E";
+/* ---- 行槽位数：必须与 AuiScreens.ROWS 完全一致 ----
+   改这里的唯一动作就是改这个数字 + 在 CSS/body 里补齐 #rowN/#delN 的静态节点。
+   下面所有字段下标都由 ROWS 推导，不再出现硬编码的 f[12]/f[19]/f.length<21
+   —— 历史上就是这两处差 1 导致整页空白。 */
+var ROWS = 24;
+
+/* 字段下标（全部由 ROWS 推导，与 Java 侧 AuiScreens.buildBody 的产出顺序一一对应）：
+     f[0]  ver（Java 侧写在首位的版本号）
+     f[1]  tab
+     f[2]  headline
+     f[3]  占位（Java 侧写的一个空格）
+     f[4 .. 4+ROWS-1]   行槽位
+     f[4+ROWS]  foot（页码）
+     f[5+ROWS]  播放条标题
+     f[6+ROWS]  进度百分比（0..100 的整数字符串）
+     f[7+ROWS]  播放按钮文字
+     f[8+ROWS]  语速
+     f[9+ROWS]  音色
+     f[10+ROWS] 状态行
+     f[11+ROWS] 关键词
+     f[12+ROWS] 音量百分比
+     f[13+ROWS] 待确认删除的行槽位
+   总字段数 = 14 + ROWS（含 f[0]）。ROWS=24 时 = 38。 */
+var F_FOOT    = 4 + ROWS;
+var F_PTITLE  = 5 + ROWS;
+var F_PERCENT = 6 + ROWS;
+var F_PLABEL  = 7 + ROWS;
+var F_SPEED   = 8 + ROWS;
+var F_VOICE   = 9 + ROWS;
+var F_STATUS  = 10 + ROWS;
+var F_KW      = 11 + ROWS;
+var F_VOL     = 12 + ROWS;
+var F_PENDING = 13 + ROWS;
+var F_MIN     = 14 + ROWS;
+
+var lastVer = "";
+var lastRaw = "";
+var rowIds = [];
+var i0;
+for (i0 = 0; i0 < ROWS; i0++) { rowIds.push("row" + i0); }
+var tabIds = ["tab0", "tab1", "tab2", "tab3", "tab4"];
+
+function q(id) { return document.getElementById(id); }
+
+function setText(id, v) {
+    var e = q(id);
+    if (e && v !== null && v !== undefined) { e.textContent = v; }
+}
+
+function setWidth(id, pct) {
+    var e = q(id);
+    var n = parseInt(pct, 10);
+    if (e && !isNaN(n)) { e.style.width = n + "%"; }
+}
+
+function highlightTab(cur) {
+    var i;
+    for (i = 0; i < tabIds.length; i++) {
+        var e = q(tabIds[i]);
+        if (!e) { continue; }
+        e.className = (i === cur) ? "tab tab-active" : "tab";
+    }
+}
+
+function render(raw) {
+    var f = raw.split(SEP);
+    /* 字段数校验：14 + ROWS（含 f[0]=ver），ROWS=24 时 = 38。
+       低于阈值说明 Java 侧与页面契约不一致：这里把诊断信息写到可见元素上再退出，
+       不再静默 return —— 静默 return 的现场表现就是「所有视图一片空白 + 日志零报错」，
+       是最难排查的一种故障。 */
+    if (f.length < F_MIN) {
+        setText("p-status", "字段数不符 " + f.length + " < " + F_MIN);
+        return;
+    }
+    var cur = parseInt(f[1], 10);
+    if (isNaN(cur)) { cur = 0; }
+    highlightTab(cur);
+    setText("vhead", f[2]);
+    var i;
+    /* 上传/刷新只在书架视图（tab 0）可见：其它视图的 headline 长短不一，固定位置的按钮会压住文字。
+       这里只改 opacity、不创建/删除 DOM（AUI 的事件绑定只认页面里已有的元素）。 */
+    var shelfOp = (cur === 0) ? "1" : "0";
+    var shelfBtns = ["rb-upload", "rb-refresh"];
+    for (i = 0; i < shelfBtns.length; i++) {
+        var sb = q(shelfBtns[i]);
+        if (sb) { sb.style.opacity = shelfOp; }
+    }
+    /* f[13+ROWS] = 待确认删除的行槽位（0..ROWS-1，越界 = 没有）。
+       行背景改成 #b33b31 提醒「这一行已经点过一次 ×」。 */
+    var pendingSlot = parseInt(f[F_PENDING], 10);
+    if (isNaN(pendingSlot)) { pendingSlot = -1; }
+    if (pendingSlot < 0 || pendingSlot >= ROWS) { pendingSlot = -1; }
+    for (i = 0; i < ROWS; i++) {
+        var cell = f[4 + i];
+        var id = rowIds[i];
+        var e = q(id);
+        var del = q("del" + i);
+        if (!e) { continue; }
+        if (!cell || cell.length === 0) {
+            e.textContent = "";
+            e.style.background = "#2a2b2d";
+            /* 本页没有这一行书：删除热区也一起藏掉，避免点到空气 */
+            if (del) { del.style.opacity = "0"; }
+        } else {
+            var parts = cell.split(SUB);
+            var main = parts[0] ? parts[0] : "";
+            var sub = (parts.length > 1 && parts[1]) ? ("    " + parts[1]) : "";
+            e.textContent = (main + sub).length > 0 ? (main + sub) : cell;
+            e.style.background = (i === pendingSlot) ? "#b33b31" : "#313233";
+            /* 删除热区只在书架视图（tab 0）显示：别的视图的行不是书架条目 */
+            if (del) { del.style.opacity = (cur === 0) ? "1" : "0"; }
+        }
+    }
+    setText("vfoot", f[F_FOOT]);
+    setText("p-title", f[F_PTITLE]);
+    setWidth("p-fill", f[F_PERCENT]);
+    setText("rb-play", f[F_PLABEL]);
+    setText("rb-speed", f[F_SPEED]);
+    setText("rb-voice", f[F_VOICE]);
+    setText("p-status", f[F_STATUS]);
+    var kw = f[F_KW];
+    if (kw === undefined || kw === null) { kw = ""; }
+    if (kw === " ") { kw = ""; }
+    var box = q("rb-kw");
+    /* 绝不回填输入框内容（原先这里是 box.value = kw）。
+       原因：kw 来自 Java 侧的 keyword，只在点「搜索」时才更新；用户打字期间它一直
+       是旧值，于是这段回填每 80ms 就把输入框改写成旧值/空串。AUI 的 AbstractText
+       在文本被外部改写后不会复位内部光标，用户下一次按键就走 insertText 的
+       substring(0, caret)，caret 大于 text.length() 时越界，直接把渲染线程打崩
+       （Crash Report 2026-11-25 05:13:31，StringIndexOutOfBoundsException）。
+       输入框只由用户输入，Java 侧只读不算写：readKeyword -> Element.getValue()。 */
+    /* 音量百分比：Java 侧追加在倒数第二位。旧版 Java 没有这个字段时按 100% 显示，
+       绝不能显示 NaN% —— 面板上出现 NaN 比不显示更让人困惑。 */
+    setText("rb-vol", volLabel(f[F_VOL]));
+}
+
+function volLabel(v) {
+    var n = parseInt(v, 10);
+    if (isNaN(n)) { n = 100; }
+    if (n < 0) { n = 0; }
+    /* 上限 400%：AL_GAIN > 1.0 是放大而不是限制。
+       超过约 200% 后母带已经录满，多数音频会削波失真 —— 那是用户主动选择，不是 bug，
+       所以这里只做显示层夹紧，不加任何额外上限或警告。 */
+    if (n > 400) { n = 400; }
+    return n + "%";
+}
+
+function pull() {
+    var e = q("rb-data");
+    if (!e) { return; }
+    var raw = e.textContent;
+    if (!raw || raw === lastRaw) { return; }
+    var ver = raw.substring(0, raw.indexOf(SEP));
+    if (ver === lastVer) { lastRaw = raw; return; }
+    var prevVer = lastVer;
+    lastRaw = raw;
+    lastVer = ver;
+    try {
+        render(raw);
+    } catch (err) {
+        /* 失败时回滚版本号与原文缓存，让下一个 80ms 周期重试；
+           同时把错误写到播放条状态行（用户肉眼可见），而不是静默吞掉。
+           上一版把异常静默吃掉，现场表现就是「页面永远是静态初值、日志零报错」。 */
+        lastVer = prevVer;
+        lastRaw = "";
+        setText("p-status", "JS错误: " + err);
+    }
+}
+
+function init() {
+    lastVer = "";
+    lastRaw = "";
+    pull();
+    setInterval(pull, 80);
+}
+
+document.addEventListener("DOMContentLoaded", init);
+if (document.readyState === "complete" || document.readyState === "interactive") {
+    init();
+}
+</script>
+</body>
+</html>

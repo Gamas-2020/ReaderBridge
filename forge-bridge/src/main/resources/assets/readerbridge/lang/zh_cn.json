@@ -1,0 +1,9 @@
+{
+    "key.categories.readerbridge": "Reader Bridge",
+    "key.readerbridge.toggle_hud": "切换阅读 HUD",
+    "key.readerbridge.hud_position": "编辑阅读 HUD 位置",
+    "key.readerbridge.open_panel": "打开阅读面板",
+    "key.readerbridge.play_pause": "播放 / 暂停朗读",
+    "key.readerbridge.next_chapter": "下一章",
+    "key.readerbridge.prev_chapter": "上一章"
+}

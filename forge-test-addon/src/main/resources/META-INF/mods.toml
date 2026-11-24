@@ -1,0 +1,41 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+description='''
+${mod_description}
+'''
+displayTest="IGNORE_SERVER_VERSION"
+
+[[dependencies.${mod_id}]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    ## 测试附属模组依赖桥接模组本体。
+    ## 版本范围刻意写成 [0,) 而不是 [1.0.0,) 或 [0.1.0-alpha,)：
+    ## 本体已改用 0.1.0-alpha 这类语义化预发布版本，而 Maven 版本序里
+    ## 0.1.0-alpha < 0.1.0，写死具体下限会在本体升降版本时让 Forge 在 mod
+    ## 扫描阶段直接进 ModLoadingError 界面（表现为游戏起不来、日志无异常）。
+    ## 本附属模组的存在目的是证明 API 可被第三方消费，真正需要保证的是
+    ## modId="readerbridge" 存在与类可见性，不是版本号本身。
+    modId="readerbridge"
+    mandatory=true
+    versionRange="[0,)"
+    ordering="NONE"
+    side="BOTH"
